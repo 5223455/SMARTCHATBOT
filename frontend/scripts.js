@@ -53,7 +53,7 @@ document.addEventListener("DOMContentLoaded", function () {
         showTypingAnimation();
 
         try {
-            const response = await fetch("http://localhost:5000/extract-text", {
+            const response = await fetch(`${window.APP_CONFIG.API_BASE_URL}/extract-text`, {
                 method: "POST",
                 body: formData
             });
@@ -482,7 +482,7 @@ document.addEventListener("DOMContentLoaded", function () {
     function startChatRequest(text, sessionId, streamer, message, questionType) {
 
         // Try streaming first, fallback to regular chat if streaming fails
-        fetch("http://localhost:5000/chat-stream", {
+        fetch(`${window.APP_CONFIG.API_BASE_URL}/chat-stream`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ sessionId, message: text }),
@@ -534,7 +534,7 @@ document.addEventListener("DOMContentLoaded", function () {
             console.error("⚠️ Streaming Error, falling back to regular chat:", error);
             
             // Fallback to regular chat with ultra-fast typewriter
-            fetch("http://localhost:5000/chat", {
+            fetch(`${window.APP_CONFIG.API_BASE_URL}/chat`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ sessionId, message: text }),
@@ -566,7 +566,7 @@ document.addEventListener("DOMContentLoaded", function () {
     // 🔄 Reset chat and images
     async function resetChat() {
         try {
-            const response = await fetch("http://localhost:5000/reset", {
+            const response = await fetch(`${window.APP_CONFIG.API_BASE_URL}/reset`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ sessionId }),

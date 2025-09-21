@@ -4,8 +4,8 @@ const config = {
     API_BASE_URL: 'http://localhost:5000'
   },
   production: {
-    // Replace with your actual backend URL after deployment
-    API_BASE_URL: 'https://your-backend-url.vercel.app' // or your chosen platform
+    // For Vercel deployment, API routes are under /api
+    API_BASE_URL: '/api'
   }
 };
 

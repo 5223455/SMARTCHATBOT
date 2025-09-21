@@ -12,9 +12,12 @@ app.use(cors());
 const chatHistory = {};
 const imageHistory = {};
 
-// 🔹 Ollama Configuration (100% FREE, runs locally)
+// 🔹 AI Configuration - Supports both Ollama (local) and OpenAI (cloud)
+const AI_PROVIDER = process.env.AI_PROVIDER || "ollama"; // "ollama" or "openai"
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2:1b"; // or "mistral", "codellama"
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2:1b";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-3.5-turbo";
 
 // 🔹 Smart Response Detection - Quick vs Detailed
 function detectResponseType(message) {
@@ -146,6 +149,56 @@ function getQuickResponse(message) {
     }
     
     return null; // No pre-defined response, use AI
+}
+
+// 🔹 OpenAI Response Generator
+async function generateOpenAIResponse(prompt, context = []) {
+    if (!OPENAI_API_KEY) {
+        throw new Error("OpenAI API key not configured");
+    }
+
+    const responseType = detectResponseType(prompt);
+    
+    try {
+        let systemPrompt;
+        
+        if (responseType === 'quick') {
+            systemPrompt = "You are a friendly AI assistant. Give VERY brief responses - maximum 1-2 sentences. Be helpful but keep it extremely short. No detailed explanations, no examples, no formatting. Just a quick, friendly response.";
+        } else {
+            systemPrompt = "You are an expert AI assistant. Provide detailed, comprehensive, and thorough responses. Be extremely helpful, informative, and detailed. Always give complete explanations with examples when relevant. Write in a professional yet friendly tone. Use proper formatting with **bold text** for important points and bullet points for lists.";
+        }
+        
+        const messages = [
+            { role: "system", content: systemPrompt },
+            ...context,
+            { role: "user", content: prompt }
+        ];
+
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${OPENAI_API_KEY}`
+            },
+            body: JSON.stringify({
+                model: OPENAI_MODEL,
+                messages: messages,
+                max_tokens: responseType === 'quick' ? 100 : 1000,
+                temperature: responseType === 'quick' ? 0.5 : 0.7,
+                stream: false
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`OpenAI API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.choices[0]?.message?.content || "I'm sorry, I couldn't generate a response. Please try again.";
+    } catch (error) {
+        console.error("❌ OpenAI Error:", error);
+        return "I'm having trouble connecting to the AI service. Please try again.";
+    }
 }
 
 // 🔹 AI Response Generator using Ollama - SMART RESPONSE SYSTEM
@@ -338,7 +391,11 @@ app.post("/chat", async (req, res) => {
             aiResponse = quickResponse;
         } else {
             // Generate AI response with full chat history
-            aiResponse = await generateAIResponse(contextMessage, contextArray);
+            if (AI_PROVIDER === "openai") {
+                aiResponse = await generateOpenAIResponse(contextMessage, contextArray);
+            } else {
+                aiResponse = await generateAIResponse(contextMessage, contextArray);
+            }
         }
         
         // Add AI response to history
@@ -421,16 +478,31 @@ app.post("/chat-stream", async (req, res) => {
                 })}\n\n`);
             } else {
                 // Stream AI response
-                for await (const chunk of generateStreamingAIResponse(contextMessage, contextArray)) {
-                    fullResponse += chunk;
+                if (AI_PROVIDER === "openai") {
+                    // For OpenAI, we'll simulate streaming with the regular response
+                    const response = await generateOpenAIResponse(contextMessage, contextArray);
+                    fullResponse = response;
                     
-                    // Send chunk to client
+                    // Send as single chunk for now (OpenAI streaming is more complex)
                     res.write(`data: ${JSON.stringify({
                         type: 'chunk',
-                        content: chunk,
+                        content: response,
                         sessionId,
                         timestamp: new Date().toISOString()
                     })}\n\n`);
+                } else {
+                    // Use Ollama streaming
+                    for await (const chunk of generateStreamingAIResponse(contextMessage, contextArray)) {
+                        fullResponse += chunk;
+                        
+                        // Send chunk to client
+                        res.write(`data: ${JSON.stringify({
+                            type: 'chunk',
+                            content: chunk,
+                            sessionId,
+                            timestamp: new Date().toISOString()
+                        })}\n\n`);
+                    }
                 }
             }
 
@@ -496,7 +568,12 @@ app.post("/extract-text", multer({ dest: "uploads/" }).single("image"), async (r
 
         // Generate AI analysis of the extracted text
         const aiPrompt = `Please analyze this extracted text from an image and provide helpful insights:\n\n"${extractedText}"\n\nProvide a brief, helpful analysis.`;
-        const aiResponse = await generateAIResponse(aiPrompt);
+        let aiResponse;
+        if (AI_PROVIDER === "openai") {
+            aiResponse = await generateOpenAIResponse(aiPrompt);
+        } else {
+            aiResponse = await generateAIResponse(aiPrompt);
+        }
 
         res.json({
             success: true,
@@ -554,10 +631,17 @@ app.get("/health", (req, res) => {
     res.json({
         status: "OK",
         timestamp: new Date().toISOString(),
-        ollama: {
-            url: OLLAMA_URL,
-            model: OLLAMA_MODEL,
-            status: "Connected"
+        ai: {
+            provider: AI_PROVIDER,
+            ollama: {
+                url: OLLAMA_URL,
+                model: OLLAMA_MODEL,
+                status: AI_PROVIDER === "ollama" ? "Connected" : "Not used"
+            },
+            openai: {
+                model: OPENAI_MODEL,
+                status: AI_PROVIDER === "openai" ? "Configured" : "Not used"
+            }
         },
         features: {
             chat: "Available",
@@ -572,9 +656,18 @@ app.get("/health", (req, res) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`🚀 Smart Chatbot running on http://localhost:${PORT}`);
-    console.log(`✨ AI: Ollama (Local) - 100% FREE, UNLIMITED usage`);
-    console.log(`📝 To use: Install Ollama and run 'ollama run llama3.2:1b'`);
-    console.log(`🔗 Ollama URL: ${OLLAMA_URL}`);
+    console.log(`✨ AI Provider: ${AI_PROVIDER.toUpperCase()}`);
+    
+    if (AI_PROVIDER === "ollama") {
+        console.log(`📝 Ollama (Local) - 100% FREE, UNLIMITED usage`);
+        console.log(`🔗 Ollama URL: ${OLLAMA_URL}`);
+        console.log(`📝 To use: Install Ollama and run 'ollama run ${OLLAMA_MODEL}'`);
+    } else if (AI_PROVIDER === "openai") {
+        console.log(`📝 OpenAI (Cloud) - Requires API key`);
+        console.log(`🔗 Model: ${OPENAI_MODEL}`);
+        console.log(`📝 Make sure OPENAI_API_KEY is set in environment variables`);
+    }
+    
     console.log(`📱 Frontend: Open frontend/index.html in your browser`);
     console.log(`🔗 Health Check: http://localhost:${PORT}/health`);
 });

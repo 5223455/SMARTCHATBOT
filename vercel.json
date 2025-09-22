@@ -4,24 +4,12 @@
     {
       "src": "frontend/**/*",
       "use": "@vercel/static"
-    },
-    {
-      "src": "nodejs-backend/server.js",
-      "use": "@vercel/node"
     }
   ],
   "routes": [
     {
-      "src": "/api/(.*)",
-      "dest": "/nodejs-backend/server.js"
-    },
-    {
       "src": "/(.*)",
       "dest": "/frontend/$1"
     }
-  ],
-  "env": {
-    "AI_PROVIDER": "openai",
-    "NODE_ENV": "production"
-  }
+  ]
 }

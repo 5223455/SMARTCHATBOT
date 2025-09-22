@@ -21,3 +21,4 @@ idna==3.10
 # Additional utilities
 colorama==0.4.6
 typing-extensions==4.13.0
+gunicorn==21.2.0

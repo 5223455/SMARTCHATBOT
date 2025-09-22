@@ -1,5 +1,9 @@
 from flask import Flask, render_template, request, jsonify
-import speech_recognition as sr
+try:
+    import speech_recognition as sr
+    SR_AVAILABLE = True
+except Exception:
+    SR_AVAILABLE = False
 import traceback
 import urllib.request
 import urllib.parse
@@ -302,9 +306,13 @@ def health_check():
         }
     })
 
-# Get list of available microphones
-mic_list = sr.Microphone.list_microphone_names()
-available_mics = [{"index": i, "name": name} for i, name in enumerate(mic_list)]
+# Get list of available microphones (optional in cloud)
+if SR_AVAILABLE:
+    mic_list = sr.Microphone.list_microphone_names()
+    available_mics = [{"index": i, "name": name} for i, name in enumerate(mic_list)]
+else:
+    mic_list = []
+    available_mics = []
 
 @app.route('/')
 def index():
@@ -431,6 +439,8 @@ def manage():
 
 @app.route('/record', methods=['POST'])
 def record_audio():
+    if not SR_AVAILABLE:
+        return jsonify({"error": "Speech recognition not available in this environment."}), 400
     try:
         mic_index = request.form.get("mic_index")
         if not mic_index:

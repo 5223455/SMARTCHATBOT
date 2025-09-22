@@ -22,6 +22,8 @@ OLLAMA_MODEL = "llama3.2:1b"  # Fast 1B parameter model for quick responses
 
 # Chat history storage
 chat_history = {}
+# Image history storage (to mirror Node.js backend)
+image_history = {}
 
 # 🎛️ RESPONSE MANAGEMENT CONFIGURATION
 RESPONSE_CONFIG = {
@@ -282,7 +284,16 @@ def chat_stream():
             # Save after complete
             if session_id not in chat_history:
                 chat_history[session_id] = []
-            chat_history[session_id].append({"role": "user", "content": user_message})
+            # Include image context summary like Node backend
+            if session_id in image_history and image_history[session_id]:
+                image_summary = "\n".join(
+                    [f"📷 {img['filename']}: \"{(img.get('extractedText') or 'No text')[:80]}\"" for img in image_history[session_id]]
+                )
+                contextual_user = f"[Context: You have {len(image_history[session_id])} images in this conversation:\n{image_summary}\n\nUser: {user_message}]"
+            else:
+                contextual_user = user_message
+
+            chat_history[session_id].append({"role": "user", "content": contextual_user})
             chat_history[session_id].append({"role": "assistant", "content": full})
             yield f"data: {json.dumps({
                 'type': 'complete',
@@ -325,12 +336,21 @@ def extract_text():
         # Minimal history record
         if session_id not in chat_history:
             chat_history[session_id] = []
+        if session_id not in image_history:
+            image_history[session_id] = []
 
         ai_prompt = (
             "Please analyze this extracted text from an image and provide helpful insights:\n\n"
             f"\"{extracted_text}\"\n\nProvide a brief, helpful analysis."
         )
         ai_response = generate_fast_ollama_response(ai_prompt, session_id)
+
+        # Store image info (summary for context awareness)
+        image_history[session_id].append({
+            "filename": getattr(file, 'filename', 'image'),
+            "extractedText": extracted_text.strip(),
+            "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        })
 
         return jsonify({
             "success": True,
@@ -346,14 +366,18 @@ def extract_text():
 def reset_chat():
     try:
         data = request.json
-        session_id = data.get("sessionId", "default")
+        session_id = (data or {}).get("sessionId")
         
-        if session_id in chat_history:
-            del chat_history[session_id]
+        if session_id:
+            chat_history.pop(session_id, None)
+            image_history.pop(session_id, None)
+        else:
+            chat_history.clear()
+            image_history.clear()
         
         return jsonify({
             "success": True,
-            "message": "Chat history cleared successfully!"
+            "message": "Chat and image history cleared successfully!"
         })
         
     except Exception as e:
@@ -429,7 +453,9 @@ def health_check():
         },
         "features": {
             "chat": "Available",
-            "speech_recognition": "Available"
+            "chatHistory": "Available",
+            "imageProcessing": "Available",
+            "ocr": "Available"
         }
     })
 

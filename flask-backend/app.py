@@ -1,4 +1,6 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
+import os
+import requests
 try:
     import speech_recognition as sr
     SR_AVAILABLE = True
@@ -15,7 +17,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Ollama Configuration for SPEED
-OLLAMA_URL = "http://localhost:11434"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = "llama3.2:1b"  # Fast 1B parameter model for quick responses
 
 # Chat history storage
@@ -192,6 +194,47 @@ def generate_fast_ollama_response(prompt, session_id):
         print(f"❌ Ollama error: {str(e)}")
         return "I'm having trouble connecting to Ollama. Please ensure it's running."
 
+def stream_ollama_response(prompt, session_id):
+    """Yield chunks from Ollama stream for SSE."""
+    try:
+        # Prepare messages (short history)
+        if session_id not in chat_history:
+            chat_history[session_id] = []
+        personality = RESPONSE_CONFIG["personality"]
+        system_prompt = PERSONALITY_PROMPTS.get(personality, PERSONALITY_PROMPTS["friendly"])
+        recent_history = chat_history[session_id][-3:] if len(chat_history[session_id]) > 3 else chat_history[session_id]
+        messages = [{"role": "system", "content": system_prompt}, *recent_history, {"role": "user", "content": prompt}]
+
+        payload = {
+            "model": OLLAMA_MODEL,
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "top_k": 40,
+                "repeat_penalty": 1.1,
+                "num_predict": 2000,
+                "stop": []
+            }
+        }
+
+        with requests.post(f"{OLLAMA_URL}/api/chat", json=payload, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            for line in r.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    content = data.get("message", {}).get("content")
+                    if content:
+                        yield content
+                except Exception:
+                    continue
+    except Exception as e:
+        print("❌ Streaming error:", e)
+        return
+
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
@@ -214,6 +257,90 @@ def chat():
     except Exception as e:
         print(f"❌ Chat error: {str(e)}")
         return jsonify({"success": False, "error": f"Failed to process message: {str(e)}"}), 500
+
+@app.route('/chat-stream', methods=['POST'])
+def chat_stream():
+    try:
+        data = request.json
+        user_message = data.get("message", "").strip()
+        session_id = data.get("sessionId", "default")
+
+        if not user_message:
+            return jsonify({"success": False, "error": "Session ID and message are required"}), 400
+
+        def sse():
+            full = ""
+            for chunk in stream_ollama_response(user_message, session_id):
+                if chunk:
+                    full += chunk
+                    yield f"data: {json.dumps({
+                        'type': 'chunk',
+                        'content': chunk,
+                        'sessionId': session_id,
+                        'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                    })}\n\n"
+            # Save after complete
+            if session_id not in chat_history:
+                chat_history[session_id] = []
+            chat_history[session_id].append({"role": "user", "content": user_message})
+            chat_history[session_id].append({"role": "assistant", "content": full})
+            yield f"data: {json.dumps({
+                'type': 'complete',
+                'fullResponse': full,
+                'sessionId': session_id,
+                'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            })}\n\n"
+
+        headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*"
+        }
+        return Response(sse(), headers=headers)
+    except Exception as e:
+        print("❌ Chat Stream Error:", e)
+        return jsonify({"success": False, "error": "Internal server error"}), 500
+
+try:
+    from PIL import Image
+    import pytesseract
+    OCR_AVAILABLE = True
+except Exception:
+    OCR_AVAILABLE = False
+
+@app.route('/extract-text', methods=['POST'])
+def extract_text():
+    try:
+        session_id = request.form.get("sessionId", "default")
+        file = request.files.get("image")
+        if not file:
+            return jsonify({"success": False, "error": "No image file provided"}), 400
+
+        extracted_text = ""
+        if OCR_AVAILABLE:
+            img = Image.open(file.stream)
+            extracted_text = pytesseract.image_to_string(img) or ""
+
+        # Minimal history record
+        if session_id not in chat_history:
+            chat_history[session_id] = []
+
+        ai_prompt = (
+            "Please analyze this extracted text from an image and provide helpful insights:\n\n"
+            f"\"{extracted_text}\"\n\nProvide a brief, helpful analysis."
+        )
+        ai_response = generate_fast_ollama_response(ai_prompt, session_id)
+
+        return jsonify({
+            "success": True,
+            "extractedText": extracted_text.strip(),
+            "aiResponse": ai_response,
+            "filename": file.filename
+        })
+    except Exception as e:
+        print("❌ OCR Error:", e)
+        return jsonify({"success": False, "error": "Failed to process image. Please try again."}), 500
 
 @app.route('/reset', methods=['POST'])
 def reset_chat():
